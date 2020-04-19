@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/usr/bin/env bash 
 #
 # Copyright (c) 2008-2010 Damon Timm.
 # Copyright (c) 2010 Mario Santagiuliana.
@@ -423,6 +423,14 @@ else
   DEST_IS_S3=false
 fi
 
+SWIFTCMD="$(which swift)"
+if [ ! -x "${SWIFTCMD}" ]; then
+  SWIFTCMD_AVAIL=false
+else
+  SWIFTCMD_AVAIL=true
+fi
+
+
 config_sanity_fail()
 {
   EXPLANATION=$1
@@ -611,7 +619,14 @@ get_remote_file_size()
 {
   echo "---------[ Destination Disk Use Information ]--------"
   FRIENDLY_TYPE_NAME=""
-  dest_type=$(echo "${DEST}" | cut -c 1,2)
+  get_remote_file_size_type $DEST
+  echo
+}
+
+
+get_remote_file_size_type() {
+  local dest=$1
+  dest_type=$(echo "${dest}" | cut -c 1,2)
   case $dest_type in
     "ss")
       FRIENDLY_TYPE_NAME="SSH"
@@ -622,11 +637,13 @@ get_remote_file_size()
 
       SIZE=$(${TMPDEST%://*} "${ssh_opt}" "${TMPDEST#*//}" du -hs "${DEST#${TMPDEST}/}" | awk '{print $1}')
       EMAIL_SUBJECT="${EMAIL_SUBJECT} ${SIZE} $(${TMPDEST%://*} "${ssh_opt}" "${TMPDEST#*//}" df -hP "${DEST#${TMPDEST}/}" | awk '{tmp=$5 " used"}END{print tmp}')"
+      echo -e "${SIZE}\t${FRIENDLY_TYPE_NAME} type backend"
     ;;
     "fi")
       FRIENDLY_TYPE_NAME="File"
       TMPDEST=$(echo "${DEST}" | cut -c 6-)
       SIZE=$(du -hs "${TMPDEST}" | awk '{print $1}')
+      echo -e "${SIZE}\t${FRIENDLY_TYPE_NAME} type backend"
     ;;
     "gs")
       FRIENDLY_TYPE_NAME="Google Cloud Storage"
@@ -635,6 +652,7 @@ get_remote_file_size()
         TMPDEST=${DEST//\/*$/}
         SIZE=$(gsutil du -hs "${TMPDEST}" | awk '{print $1$2}')
       fi
+      echo -e "${SIZE}\t${FRIENDLY_TYPE_NAME} type backend"
     ;;
     "s3")
       FRIENDLY_TYPE_NAME="Amazon S3"
@@ -653,6 +671,53 @@ get_remote_file_size()
               SIZE="-s3cmd not found in PATH-"
           fi
       fi
+      echo -e "${SIZE}\t${FRIENDLY_TYPE_NAME} type backend"
+    ;;
+    "sw")
+      FRIENDLY_TYPE_NAME="Swift Object Storage"
+      if ${SWIFTCMD_AVAIL} ; then
+          TMPDEST=$(echo "${dest}" | cut -f 3- -d /)
+	  SIZE=$(
+	  	export OS_AUTH_URL=$SWIFT_AUTHURL
+		export OS_USERNAME=$SWIFT_USERNAME
+		export OS_PASSWORD=$SWIFT_PASSWORD
+		export OS_REGION_NAME=$SWIFT_REGIONNAME
+		${SWIFTCMD} --auth-version $SWIFT_AUTHVERSION stat $TMPDEST --lh | sed -n "s/[[:space:]]*Bytes: \(.*\)$/\1/p"
+		)
+      fi
+      echo -e "${SIZE}\t${FRIENDLY_TYPE_NAME} type backend"
+      ;;
+    "pc")
+      FRIENDLY_TYPE_NAME="OVH Cloud Archive"
+      if ${SWIFTCMD_AVAIL} ; then
+          TMPDEST=$(echo "${dest}" | cut -f 3- -d /)
+	  SIZE=$(
+	  	export OS_AUTH_URL=$PCA_AUTHURL
+		export OS_USERNAME=$PCA_USERNAME
+		export OS_PASSWORD=$PCA_PASSWORD
+		export OS_REGION_NAME=$PCA_REGIONNAME
+		${SWIFTCMD} --auth-version $PCA_AUTHVERSION stat $TMPDEST --lh | sed -n "s/[[:space:]]*Bytes: \(.*\)$/\1/p"
+		)
+      fi
+      echo -e "${SIZE}\t${FRIENDLY_TYPE_NAME} type backend"
+      ;;
+    "mu")
+       FRIENDLY_TYPE_NAME="Multi backend"
+       json=${DEST#multi://}
+       json=${json%\?*}
+       i=0
+       while true ; do
+	       cat $json | jq -e ".[$i]" > /dev/null || break
+	       desc=$(cat $json | jq -r ".[$i].description")
+	       url=$(cat $json | jq -r ".[$i].url")
+	       params=$(cat $json | jq -r ".[$i].env[] | .name+\"='\"+.value+\"'\"")
+	       ( #subshell
+	         eval $params
+                 get_remote_file_size_type "$url"
+	       )
+
+	       i=$(( i + 1 ))
+       done
     ;;
     *)
       # not yet available for the other backends
@@ -660,13 +725,10 @@ get_remote_file_size()
     ;;
   esac
 
-  if [[ ${FRIENDLY_TYPE_NAME} ]] ; then
-      echo -e "${SIZE}\t${FRIENDLY_TYPE_NAME} type backend"
-  else
+  if [[ -z "${FRIENDLY_TYPE_NAME}" ]] ; then
       echo "Destination disk use information is currently only available for the following storage backends:"
-      echo "File, SSH, Amazon S3 and Google Cloud"
+      echo "File, SSH, Amazon S3, Google Cloud, Swift, PCA and Multi"
   fi
-  echo
 }
 
 include_exclude()
@@ -1031,6 +1093,10 @@ case "${COMMAND}" in
     get_file_sizes
   ;;
 
+  "size")
+    include_exclude
+    get_file_sizes
+  ;;
   *)
     echo -e "[Only show $(basename "$0") usage options]\n"
     usage
