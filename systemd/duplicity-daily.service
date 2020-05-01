@@ -1,0 +1,6 @@
+[Unit]
+Description="Launch duplicity-backup for daily tasks"
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/duplicity-backup-launcher daily
